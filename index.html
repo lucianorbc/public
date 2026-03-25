@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ducato Sensor Monitor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 8px; font-size: 1.5rem; }
+    .subtitle { color: #888; margin-bottom: 20px; font-size: 0.9rem; }
+    .settings {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .settings label { font-size: 0.85rem; color: #888; }
+    .settings input {
+      background: #16213e;
+      border: 1px solid #333;
+      color: #eee;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 0.9rem;
+      width: 140px;
+    }
+    #scanBtn {
+      background: #0f3460;
+      color: #eee;
+      border: 1px solid #16213e;
+      padding: 12px 32px;
+      font-size: 1rem;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-bottom: 20px;
+      transition: background 0.2s;
+    }
+    #scanBtn:hover { background: #1a4a8a; }
+    #scanBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { color: #888; margin-bottom: 20px; font-size: 0.85rem; }
+    .cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      max-width: 500px;
+      width: 100%;
+    }
+    .card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+    }
+    .card .label { font-size: 0.8rem; color: #888; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+    .card .value { font-size: 2.2rem; font-weight: 700; }
+    .card .detail { font-size: 0.85rem; color: #aaa; margin-top: 4px; }
+    .card.water .value { color: #4cc9f0; }
+    .card.grey .value { color: #f77f00; }
+    .card.leisure .value { color: #80ed99; }
+    .card.car .value { color: #c77dff; }
+    .bar-bg {
+      width: 100%;
+      height: 6px;
+      background: #0a0a1a;
+      border-radius: 3px;
+      margin-top: 10px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.5s ease;
+    }
+    .card.water .bar-fill { background: #4cc9f0; }
+    .card.grey .bar-fill { background: #f77f00; }
+    .card.leisure .bar-fill { background: #80ed99; }
+    .card.car .bar-fill { background: #c77dff; }
+    #rssi { color: #666; font-size: 0.8rem; margin-top: 16px; }
+    #log {
+      margin-top: 20px;
+      max-width: 500px;
+      width: 100%;
+      max-height: 150px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: #555;
+      background: #111;
+      border-radius: 8px;
+      padding: 10px;
+      display: none;
+    }
+    @media (max-width: 400px) {
+      .cards { grid-template-columns: 1fr; }
+      .card .value { font-size: 1.8rem; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Ducato Sensor Monitor</h1>
+  <p class="subtitle">BLE sensor dashboard</p>
+
+  <div class="settings">
+    <label for="keyInput">Encryption key:</label>
+    <input type="text" id="keyInput" value="" placeholder="enter key">
+  </div>
+
+  <button id="scanBtn">Start Scanning</button>
+  <div id="status">Press the button to scan for the ESP32</div>
+
+  <div class="cards">
+    <div class="card water">
+      <div class="label">Clean Water</div>
+      <div class="value" id="cleanPct">--%</div>
+      <div class="detail" id="cleanDetail">--/50L</div>
+      <div class="bar-bg"><div class="bar-fill" id="cleanBar" style="width:0%"></div></div>
+    </div>
+    <div class="card grey">
+      <div class="label">Grey Water</div>
+      <div class="value" id="greyPct">--%</div>
+      <div class="detail" id="greyDetail">--/80L</div>
+      <div class="bar-bg"><div class="bar-fill" id="greyBar" style="width:0%"></div></div>
+    </div>
+    <div class="card leisure">
+      <div class="label">Leisure Battery</div>
+      <div class="value" id="leisurePct">--%</div>
+      <div class="detail" id="leisureDetail">--V</div>
+      <div class="bar-bg"><div class="bar-fill" id="leisureBar" style="width:0%"></div></div>
+    </div>
+    <div class="card car">
+      <div class="label">Car Battery</div>
+      <div class="value" id="carPct">--%</div>
+      <div class="detail" id="carDetail">--V</div>
+      <div class="bar-bg"><div class="bar-fill" id="carBar" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <div id="rssi"></div>
+  <div id="log"></div>
+
+  <script>
+    const SERVICE_UUID = 0xDC10;
+    const PAYLOAD_LEN = 8;
+    const STORAGE_KEY = 'ducato_enc_key';
+
+    const $ = id => document.getElementById(id);
+    let scanning = false;
+
+    // Load saved key
+    const savedKey = localStorage.getItem(STORAGE_KEY) || '';
+    $('keyInput').value = savedKey;
+
+    // Save key on change
+    $('keyInput').addEventListener('input', () => {
+      localStorage.setItem(STORAGE_KEY, $('keyInput').value);
+    });
+
+    $('scanBtn').addEventListener('click', startScan);
+
+    function getEncKey() {
+      const key = $('keyInput').value.trim();
+      if (!key) return null;
+      return new TextEncoder().encode(key);
+    }
+
+    async function startScan() {
+      if (scanning) return;
+
+      if (!getEncKey()) {
+        $('status').textContent = 'Enter an encryption key first.';
+        $('keyInput').focus();
+        return;
+      }
+
+      if (!navigator.bluetooth) {
+        $('status').textContent = 'Web Bluetooth not supported. Use Chrome/Edge or Bluefy (iOS).';
+        return;
+      }
+
+      try {
+        $('scanBtn').disabled = true;
+        $('status').textContent = 'Requesting BLE scan...';
+
+        const scan = await navigator.bluetooth.requestLEScan({
+          filters: [{ name: 'ducato' }],
+          keepRepeatedDevices: true
+        });
+
+        scanning = true;
+        $('scanBtn').textContent = 'Scanning...';
+        $('keyInput').disabled = true;
+        $('status').textContent = 'Listening for advertisements from "ducato"...';
+
+        navigator.bluetooth.addEventListener('advertisementreceived', onAdvertisement);
+
+        scan.addEventListener('stop', () => {
+          scanning = false;
+          $('scanBtn').disabled = false;
+          $('scanBtn').textContent = 'Start Scanning';
+          $('keyInput').disabled = false;
+          $('status').textContent = 'Scan stopped. Press button to restart.';
+        });
+      } catch (err) {
+        $('scanBtn').disabled = false;
+        $('status').textContent = `Error: ${err.message}`;
+        log(`Error: ${err.message}`);
+      }
+    }
+
+    function onAdvertisement(event) {
+      const serviceData = event.serviceData;
+      if (!serviceData) return;
+
+      serviceData.forEach((value, key) => {
+        if (value.byteLength < PAYLOAD_LEN) return;
+
+        const encKey = getEncKey();
+        if (!encKey) return;
+
+        const encrypted = new Uint8Array(value.buffer, value.byteOffset, PAYLOAD_LEN);
+        const decrypted = xorDecrypt(encrypted, encKey);
+
+        if (decrypted[0] > 100 || decrypted[1] > 100 || decrypted[2] > 100 || decrypted[3] > 100) {
+          log(`Bad data: ${Array.from(decrypted).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+          return;
+        }
+
+        const cleanPct = decrypted[0];
+        const greyPct = decrypted[1];
+        const leisurePct = decrypted[2];
+        const carPct = decrypted[3];
+        const leisureMv = decrypted[4] | (decrypted[5] << 8);
+        const carMv = decrypted[6] | (decrypted[7] << 8);
+
+        updateUI(cleanPct, greyPct, leisurePct, carPct, leisureMv, carMv, event.rssi);
+      });
+    }
+
+    function xorDecrypt(data, key) {
+      const result = new Uint8Array(data.length);
+      for (let i = 0; i < data.length; i++) {
+        result[i] = data[i] ^ key[i % key.length];
+      }
+      return result;
+    }
+
+    function updateUI(cleanPct, greyPct, leisurePct, carPct, leisureMv, carMv, rssi) {
+      const now = new Date().toLocaleTimeString();
+      $('status').textContent = `Last update: ${now}`;
+
+      $('cleanPct').textContent = `${cleanPct}%`;
+      $('cleanDetail').textContent = `${Math.round(cleanPct * 50 / 100)}/50L`;
+      $('cleanBar').style.width = `${cleanPct}%`;
+
+      $('greyPct').textContent = `${greyPct}%`;
+      $('greyDetail').textContent = `${Math.round(greyPct * 80 / 100)}/80L`;
+      $('greyBar').style.width = `${greyPct}%`;
+
+      $('leisurePct').textContent = `${leisurePct}%`;
+      $('leisureDetail').textContent = `${(leisureMv / 1000).toFixed(1)}V`;
+      $('leisureBar').style.width = `${leisurePct}%`;
+
+      $('carPct').textContent = `${carPct}%`;
+      $('carDetail').textContent = `${(carMv / 1000).toFixed(1)}V`;
+      $('carBar').style.width = `${carPct}%`;
+
+      $('rssi').textContent = rssi != null ? `RSSI: ${rssi} dBm` : '';
+
+      log(`[${now}] Clean:${cleanPct}% Grey:${greyPct}% Leisure:${leisurePct}%(${(leisureMv/1000).toFixed(1)}V) Car:${carPct}%(${(carMv/1000).toFixed(1)}V)`);
+    }
+
+    function log(msg) {
+      const el = $('log');
+      el.style.display = 'block';
+      el.textContent += msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    }
+  </script>
+</body>
+</html>
